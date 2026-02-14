@@ -1,0 +1,83 @@
+name: Smart Approval Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  smart-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch base branch
+        run: |
+          git fetch origin ${{ github.base_ref }}
+
+      - name: Check diff and approvals
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require("child_process");
+
+            // get diff
+            const diff = execSync(
+              `git diff origin/${process.env.GITHUB_BASE_REF}`
+            ).toString();
+
+            const needsDepTeam = diff.includes("project.py") && diff.includes("hellop");
+            const needsTeam2 = diff.includes("project.py") && diff.includes("hip");
+
+            if (!needsDepTeam && !needsTeam2) {
+              console.log("No special approvals required ✅");
+              return;
+            }
+
+            // get reviews
+            const reviews = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            const approvedUsers = reviews.data
+              .filter(r => r.state === "APPROVED")
+              .map(r => r.user.login);
+
+            console.log("Approved users:", approvedUsers);
+
+            // teams
+            async function checkTeam(teamSlug){
+              const members = await github.rest.teams.listMembersInOrg({
+                org: context.repo.owner,
+                team_slug: teamSlug,
+              });
+
+              const teamMembers = members.data.map(m => m.login);
+
+              return approvedUsers.some(user =>
+                teamMembers.includes(user)
+              );
+            }
+
+            if (needsDepTeam) {
+              const ok = await checkTeam("dependency-control-team");
+
+              if (!ok) {
+                core.setFailed(
+                  "❌ PR contains 'hellop' in project.py → Dependency Team approval required."
+                );
+              }
+            }
+
+            if (needsTeam2) {
+              const ok = await checkTeam("team2");
+
+              if (!ok) {
+                core.setFailed(
+                  "❌ PR contains 'hip' in project.py → Team2 approval required."
+                );
+              }
+            }
